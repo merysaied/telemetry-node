@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telemetry Dashboard</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+body{margin:0;padding:16px;background:#1c1c1c;color:#e8e8e8;font-family:Segoe UI,Arial,sans-serif}
+h1{text-align:center;color:#ffc400;font-weight:500;margin:6px 0}
+#status{text-align:center;margin-bottom:14px}
+#pill{display:inline-block;padding:3px 14px;border-radius:12px;font-size:13px;font-weight:600;color:#111}
+.ok{background:#4caf50}.warn{background:#ff9800}.bad{background:#e53935}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;max-width:1000px;margin:0 auto 14px}
+.card,.panel{background:#2b2b2b;border-radius:10px;padding:14px;box-shadow:0 2px 8px #0008}
+.card h2,.panel h2{margin:0 0 10px;text-align:center;color:#ffc400;font-size:17px}
+.row{display:flex;justify-content:space-between;font-size:14px;padding:2px 0}
+.row span:first-child{color:#9a9a9a}
+.panel{max-width:1000px;margin:0 auto 14px}
+.inst{display:flex;flex-wrap:wrap;justify-content:center;gap:34px}
+.inst div{text-align:center;font-size:14px;color:#9a9a9a}
+.inst b{color:#e8e8e8}
+#map{height:340px;border-radius:8px;background:#222;color:#9a9a9a;text-align:center;line-height:340px}
+label{font-size:13px;color:#9a9a9a}
+.st-ok{color:#4caf50;font-weight:600}.st-bad{color:#e53935;font-weight:600}
+</style>
+</head>
+<body>
+<h1>Telemetry Dashboard</h1>
+<div id="status"><span id="pill" class="warn">CONNECTING</span></div>
+
+<div class="grid">
+  <div class="card"><h2>Link Status</h2>
+    <div class="row"><span>Packet #</span><span id="pid">-</span></div>
+    <div class="row"><span>Uptime</span><span id="up">-</span></div>
+    <div class="row"><span>OK</span><span id="good">-</span></div>
+    <div class="row"><span>Bad (CRC)</span><span id="bad">-</span></div>
+    <div class="row"><span>Lost</span><span id="lost">-</span></div>
+  </div>
+  <div class="card"><h2>Attitude</h2>
+    <div class="row"><span>Roll</span><span id="roll">-</span></div>
+    <div class="row"><span>Pitch</span><span id="pitch">-</span></div>
+    <div class="row"><span>Yaw</span><span id="yaw">-</span></div>
+  </div>
+  <div class="card"><h2>Barometer</h2>
+    <div class="row"><span>Pressure</span><span id="pres">-</span></div>
+    <div class="row"><span>Temperature</span><span id="temp">-</span></div>
+    <div class="row"><span>Altitude</span><span id="balt">-</span></div>
+  </div>
+  <div class="card"><h2>GPS Data</h2>
+    <div class="row"><span>Latitude</span><span id="lat">-</span></div>
+    <div class="row"><span>Longitude</span><span id="lon">-</span></div>
+    <div class="row"><span>Altitude</span><span id="galt">-</span></div>
+  </div>
+  <div class="card"><h2>Sensor Status</h2>
+    <div class="row"><span>MPU6050</span><span id="st_mpu">-</span></div>
+    <div class="row"><span>BMP180</span><span id="st_bmp">-</span></div>
+    <div class="row"><span>GPS fix</span><span id="st_gps">-</span></div>
+    <div class="row"><span>Protocol</span><span id="ver">-</span></div>
+  </div>
+</div>
+
+<div class="panel"><h2>Flight Instruments</h2>
+  <div class="inst">
+    <div><canvas id="att"></canvas><br>Attitude: <b id="attv">-</b></div>
+    <div><canvas id="hdg"></canvas><br>Heading: <b id="hdgv">-</b></div>
+    <div><canvas id="alt"></canvas><br>Altitude: <b id="altv">-</b></div>
+  </div>
+</div>
+
+<div class="panel"><h2>Position</h2>
+  <div id="map">Loading map...</div>
+  <label><input type="checkbox" id="follow" checked> Follow aircraft</label>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const rad = d => d * Math.PI / 180;
+const fmt = (v, d = 1) => (typeof v === "number" && isFinite(v)) ? v.toFixed(d) : "-";
+const C = 110, R = 96;
+
+function prep(id) {
+  const c = $(id), dpr = window.devicePixelRatio || 1;
+  c.width = c.height = 220 * dpr;
+  c.style.width = c.style.height = "220px";
+  const x = c.getContext("2d");
+  x.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return x;
+}
+const cAtt = prep("att"), cHdg = prep("hdg"), cAlt = prep("alt");
+
+function bezel(x) {
+  x.clearRect(0, 0, 220, 220);
+  x.beginPath(); x.arc(C, C, 108, 0, 7);
+  x.fillStyle = "#0e0e0e"; x.fill();
+  x.lineWidth = 3; x.strokeStyle = "#555"; x.stroke();
+}
+
+function drawAttitude(roll, pitch) {
+  const x = cAtt, k = 2.4;
+  pitch = Math.max(-60, Math.min(60, pitch));
+  bezel(x);
+  x.save();
+  x.beginPath(); x.arc(C, C, R, 0, 7); x.clip();
+  x.translate(C, C); x.rotate(-rad(roll));
+  x.save(); x.translate(0, pitch * k);
+  x.fillStyle = "#4a8fd8"; x.fillRect(-300, -600, 600, 600);
+  x.fillStyle = "#8a5a2b"; x.fillRect(-300, 0, 600, 600);
+  x.strokeStyle = x.fillStyle = "#fff"; x.lineWidth = 2;
+  x.font = "10px sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+  x.beginPath(); x.moveTo(-300, 0); x.lineTo(300, 0); x.stroke();
+  for (let p = -40; p <= 40; p += 5) {
+    if (!p) continue;
+    const y = -p * k, w = p % 10 ? 14 : 28;
+    x.beginPath(); x.moveTo(-w, y); x.lineTo(w, y); x.stroke();
+    if (!(p % 10)) { x.fillText(Math.abs(p), -w - 12, y); x.fillText(Math.abs(p), w + 12, y); }
+  }
+  x.restore();
+  for (const a of [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60]) {
+    x.save(); x.rotate(rad(a));
+    x.beginPath(); x.moveTo(0, -R); x.lineTo(0, -R + (a % 30 ? 7 : 12)); x.stroke();
+    x.restore();
+  }
+  x.restore();
+  x.strokeStyle = x.fillStyle = "#ffb300"; x.lineWidth = 3;
+  x.beginPath();
+  x.moveTo(60, C); x.lineTo(95, C); x.lineTo(95, C + 8);
+  x.moveTo(160, C); x.lineTo(125, C); x.lineTo(125, C + 8);
+  x.stroke();
+  x.beginPath(); x.arc(C, C, 3, 0, 7); x.fill();
+  x.fillStyle = "#ff5722"; x.beginPath();
+  x.moveTo(C, C - R + 13); x.lineTo(C - 6, C - R + 25); x.lineTo(C + 6, C - R + 25);
+  x.fill();
+}
+
+function drawHeading(h) {
+  const x = cHdg;
+  const names = {0: "N", 30: "3", 60: "6", 90: "E", 120: "12", 150: "15", 180: "S", 210: "21", 240: "24", 270: "W", 300: "30", 330: "33"};
+  bezel(x);
+  x.save(); x.translate(C, C); x.rotate(-rad(h));
+  x.strokeStyle = x.fillStyle = "#fff";
+  x.font = "bold 13px sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+  for (let a = 0; a < 360; a += 5) {
+    const major = a % 30 === 0, len = major ? 14 : (a % 10 === 0 ? 9 : 5);
+    x.save(); x.rotate(rad(a)); x.lineWidth = major ? 2.5 : 1.5;
+    x.beginPath(); x.moveTo(0, -R + 3); x.lineTo(0, -R + 3 + len); x.stroke();
+    if (major) x.fillText(names[a], 0, -R + 32);
+    x.restore();
+  }
+  x.restore();
+  x.fillStyle = "#fff"; x.beginPath();
+  x.moveTo(110, 78); x.lineTo(115, 100); x.lineTo(142, 114); x.lineTo(142, 120); x.lineTo(115, 114);
+  x.lineTo(113, 136); x.lineTo(124, 144); x.lineTo(124, 149); x.lineTo(110, 145);
+  x.lineTo(96, 149); x.lineTo(96, 144); x.lineTo(107, 136); x.lineTo(105, 114);
+  x.lineTo(78, 120); x.lineTo(78, 114); x.lineTo(105, 100); x.closePath(); x.fill();
+  x.fillStyle = "#ffc400"; x.beginPath();
+  x.moveTo(C, 20); x.lineTo(103, 8); x.lineTo(117, 8); x.fill();
+}
+
+function hand(x, ang, len, w) {
+  x.save(); x.rotate(ang); x.lineWidth = w; x.lineCap = "round";
+  x.beginPath(); x.moveTo(0, 12); x.lineTo(0, -len); x.stroke();
+  x.restore();
+}
+
+function drawAlt(alt) {
+  const x = cAlt, m = (v, n) => ((v % n) + n) % n;
+  bezel(x);
+  x.save(); x.translate(C, C);
+  x.strokeStyle = x.fillStyle = "#fff";
+  x.font = "bold 15px sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+  for (let i = 0; i < 50; i++) {
+    const a = rad(i * 7.2), big = i % 5 === 0;
+    x.save(); x.rotate(a); x.lineWidth = big ? 2.5 : 1.2;
+    x.beginPath(); x.moveTo(0, -R + 3); x.lineTo(0, -R + (big ? 15 : 9)); x.stroke();
+    x.restore();
+    if (big) x.fillText(i / 5, (R - 28) * Math.sin(a), -(R - 28) * Math.cos(a));
+  }
+  x.font = "11px sans-serif"; x.fillStyle = "#9a9a9a";
+  x.fillText("ALT", 0, -30); x.fillText("x100 m", 0, 32);
+  x.strokeStyle = "#fff"; hand(x, rad(m(alt, 1000) * 0.36), 74, 3);
+  x.strokeStyle = "#ffc400"; hand(x, rad(m(alt, 10000) * 0.036), 46, 6);
+  x.fillStyle = "#ccc"; x.beginPath(); x.arc(0, 0, 5, 0, 7); x.fill();
+  x.restore();
+}
+
+let map = null, marker = null, trail = null, pts = [], haveFix = false;
+function initMap() {
+  if (typeof L === "undefined") { $("map").textContent = "Map needs internet access (Leaflet did not load)."; return; }
+  $("map").textContent = ""; $("map").style.lineHeight = "normal";
+  map = L.map("map").setView([20, 0], 2);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom: 19, attribution: "&copy; OpenStreetMap contributors"}).addTo(map);
+  trail = L.polyline([], {color: "#ffc400", weight: 3}).addTo(map);
+  marker = L.circleMarker([0, 0], {radius: 8, color: "#fff", weight: 2, fillColor: "#ff5722", fillOpacity: 1});
+}
+function updateMap(lat, lon) {
+  if (!map || (lat === 0 && lon === 0)) return;
+  const p = [lat, lon];
+  if (!haveFix) { haveFix = true; marker.addTo(map); map.setView(p, 14); }
+  marker.setLatLng(p);
+  const last = pts[pts.length - 1];
+  if (!last || last[0] !== lat || last[1] !== lon) { pts.push(p); pts = pts.slice(-300); trail.setLatLngs(pts); }
+  if ($("follow").checked) map.panTo(p, {animate: false});
+}
+
+function setStatus(d) {
+  let t = "SERVER OFFLINE", c = "bad";
+  if (d) {
+    if (d.demo) { t = "DEMO DATA"; c = "warn"; }
+    else if (!d.connected) { t = "NO CONNECTION"; c = "bad"; }
+    else if (d.age === null || d.age > 2) { t = "WAITING FOR DATA"; c = "warn"; }
+    else { t = "LIVE"; c = "ok"; }
+  }
+  $("pill").textContent = t; $("pill").className = c;
+}
+
+// Shows one status bit: green OK / red FAIL (or a custom text). "-" until a packet arrives.
+function setFlag(id, known, on, offText) {
+  const el = $(id);
+  if (!known) { el.textContent = "-"; el.className = ""; return; }
+  el.textContent = on ? "OK" : (offText || "FAIL");
+  el.className = on ? "st-ok" : "st-bad";
+}
+
+function render(d) {
+  setStatus(d);
+  // status bits sent by the ESP32 (see telemetry_packet.h): bit0 MPU, bit1 BMP, bit2 GPS fix
+  const known = d.version > 0;                      // version is 0 until the first packet
+  const mpuOk = !known || (d.status & 0x01);        // before the first packet, show normal values
+  const bmpOk = !known || (d.status & 0x02);
+  const na = (ok, text) => ok ? text : "N/A";       // a failed sensor shows N/A, never a fake number
+  $("pid").textContent = d.packet_id;
+  $("up").textContent = fmt(d.timestamp / 1000, 1) + " s";
+  $("good").textContent = d.good; $("bad").textContent = d.bad; $("lost").textContent = d.lost;
+  $("roll").textContent = na(mpuOk, fmt(d.roll) + " °"); $("pitch").textContent = na(mpuOk, fmt(d.pitch) + " °"); $("yaw").textContent = na(mpuOk, fmt(d.yaw) + " °");
+  $("pres").textContent = na(bmpOk, fmt(d.pressure, 2) + " hPa"); $("temp").textContent = na(bmpOk, fmt(d.temperature) + " °C");
+  $("balt").textContent = na(bmpOk, fmt(d.bmp_altitude) + " m");
+  $("lat").textContent = fmt(d.latitude, 5); $("lon").textContent = fmt(d.longitude, 5);
+  $("galt").textContent = fmt(d.gps_altitude) + " m";
+  const hdg = ((d.yaw % 360) + 360) % 360;
+  drawAttitude(d.roll, d.pitch); drawHeading(hdg); drawAlt(d.bmp_altitude);
+  $("attv").textContent = na(mpuOk, "R " + fmt(d.roll, 0) + "° / P " + fmt(d.pitch, 0) + "°");
+  $("hdgv").textContent = na(mpuOk, fmt(hdg, 0) + "°");
+  $("altv").textContent = na(bmpOk, fmt(d.bmp_altitude, 0) + " m");
+  updateMap(d.latitude, d.longitude);
+
+  setFlag("st_mpu", known, d.status & 0x01);
+  setFlag("st_bmp", known, d.status & 0x02);
+  setFlag("st_gps", known, d.status & 0x04, "NO FIX");
+  $("ver").textContent = known ? "v" + d.version : "-";
+}
+
+async function loop() {
+  while (true) {
+    try {
+      const r = await fetch("/data", {cache: "no-store"});
+      render(await r.json());
+    } catch (e) { setStatus(null); }
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
+drawAttitude(0, 0); drawHeading(0); drawAlt(0);
+initMap();
+loop();
+</script>
+</body>
+</html>

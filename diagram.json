@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "author": "Anonymous maker",
+  "editor": "wokwi",
+  "parts": [
+    { "id": "esp", "type": "board-esp32-s3-devkitc-1" },
+    { "id": "mpu", "type": "wokwi-mpu6050", "top": 0, "left": 200, "attrs": {} },
+    { "id": "bmp", "type": "board-bmp180", "top": 150, "left": 200, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "" ],
+    [ "esp:RX", "$serialMonitor:TX", "" ],
+    [ "esp:3V3.1", "mpu:VCC", "red", [] ],
+    [ "esp:GND.1", "mpu:GND", "black", [] ],
+    [ "esp:8", "mpu:SDA", "green", [] ],
+    [ "esp:9", "mpu:SCL", "blue", [] ],
+    [ "esp:3V3.1", "bmp:VCC", "red", [] ],
+    [ "esp:GND.1", "bmp:GND", "black", [] ],
+    [ "esp:8", "bmp:SDA", "green", [] ],
+    [ "esp:9", "bmp:SCL", "blue", [] ]
+  ]
+}
