@@ -23,11 +23,27 @@ h1{text-align:center;color:#ffc400;font-weight:500;margin:6px 0}
 #map{height:340px;border-radius:8px;background:#222;color:#9a9a9a;text-align:center;line-height:340px}
 label{font-size:13px;color:#9a9a9a}
 .st-ok{color:#4caf50;font-weight:600}.st-bad{color:#e53935;font-weight:600}
+.modebar{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+.modebar button{background:#3a3a3a;color:#e8e8e8;border:2px solid #555;border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
+.modebar button:hover{border-color:#ffc400}
+.modebar button.active{background:#ffc400;color:#111;border-color:#ffc400;font-weight:600}
+#modeinfo{text-align:center;font-size:13px;color:#9a9a9a;margin-top:10px;min-height:18px}
+#err{display:none;margin-top:10px;padding:8px 12px;border-radius:8px;background:#5a1f1f;color:#ffb4b4;font-size:13px;text-align:center}
 </style>
 </head>
 <body>
 <h1>Telemetry Dashboard</h1>
 <div id="status"><span id="pill" class="warn">CONNECTING</span></div>
+
+<div class="panel"><h2>Data Source</h2>
+  <div class="modebar">
+    <button data-mode="demo">Demo</button>
+    <button data-mode="hybrid">Hybrid Mode</button>
+    <button data-mode="simulator">Flight Simulator Mode</button>
+  </div>
+  <div id="modeinfo"></div>
+  <div id="err"></div>
+</div>
 
 <div class="grid">
   <div class="card"><h2>Link Status</h2>
@@ -194,6 +210,11 @@ function initMap() {
   trail = L.polyline([], {color: "#ffc400", weight: 3}).addTo(map);
   marker = L.circleMarker([0, 0], {radius: 8, color: "#fff", weight: 2, fillColor: "#ff5722", fillOpacity: 1});
 }
+function resetMap() {           // a new data source starts: forget the old track
+  pts = []; haveFix = false;
+  if (trail) trail.setLatLngs([]);
+  if (marker && map) marker.remove();
+}
 function updateMap(lat, lon) {
   if (!map || (lat === 0 && lon === 0)) return;
   const p = [lat, lon];
@@ -207,8 +228,10 @@ function updateMap(lat, lon) {
 function setStatus(d) {
   let t = "SERVER OFFLINE", c = "bad";
   if (d) {
-    if (d.demo) { t = "DEMO DATA"; c = "warn"; }
-    else if (!d.connected) { t = "NO CONNECTION"; c = "bad"; }
+    if (d.error) { t = "ERROR"; c = "bad"; }
+    else if (d.demo) { t = "DEMO DATA"; c = "warn"; }
+    else if (d.finished) { t = "FINISHED"; c = "warn"; }
+    else if (!d.connected) { t = d.mode ? "STARTING..." : "NO CONNECTION"; c = "warn"; }
     else if (d.age === null || d.age > 2) { t = "WAITING FOR DATA"; c = "warn"; }
     else { t = "LIVE"; c = "ok"; }
   }
@@ -223,8 +246,38 @@ function setFlag(id, known, on, offText) {
   el.className = on ? "st-ok" : "st-bad";
 }
 
+const MODE_INFO = {
+  demo: "All the data is fake, made by the ground station. No Wokwi and no JSBSim needed.",
+  hybrid: "ESP32 firmware in Wokwi: its sensors are driven by a simple flight model, and the GPS is the fake GPS inside the firmware.",
+  simulator: "ESP32 firmware in Wokwi: its sensors and its GPS position come from the JSBSim flight simulator."
+};
+let currentMode = null;
+
+function showMode(d) {
+  if (d.mode && d.mode !== currentMode) {
+    if (currentMode !== null) resetMap();           // the first update keeps the map as it is
+    currentMode = d.mode;
+  }
+  document.querySelectorAll(".modebar button").forEach(b =>
+    b.classList.toggle("active", b.dataset.mode === d.mode));
+  $("modeinfo").textContent = MODE_INFO[d.mode] || "";
+  const e = $("err");
+  e.style.display = d.error ? "block" : "none";
+  e.textContent = d.error || "";
+}
+
+async function chooseMode(mode) {
+  try {
+    // the X-GCS header is required by the server: other web sites cannot send it
+    await fetch("/mode?m=" + encodeURIComponent(mode), {method: "POST", headers: {"X-GCS": "1"}});
+  } catch (e) { /* the server is offline: the status pill already says so */ }
+}
+document.querySelectorAll(".modebar button").forEach(b =>
+  b.addEventListener("click", () => chooseMode(b.dataset.mode)));
+
 function render(d) {
   setStatus(d);
+  showMode(d);
   // status bits sent by the ESP32 (see telemetry_packet.h): bit0 MPU, bit1 BMP, bit2 GPS fix
   const known = d.version > 0;                      // version is 0 until the first packet
   const mpuOk = !known || (d.status & 0x01);        // before the first packet, show normal values
